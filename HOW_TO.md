@@ -19,6 +19,7 @@
 8. [Step 1: how the project was created](#8-step-1-how-the-project-was-created)
    - [Step 2: catalog sync and search](#8b-step-2-catalog-sync-and-search)
    - [Step 3: the price scraper, runs, history, CSV, cron](#8c-step-3-the-price-scraper-runs-history-csv-cron)
+   - [Step 4: the dashboard](#8d-step-4-the-dashboard)
 9. [Running the project locally](#9-running-the-project-locally)
 10. [Environment variables](#10-environment-variables)
 11. [Progress tracker](#11-progress-tracker)
@@ -161,17 +162,26 @@ backend/
 ```
 frontend/
 ├── README.md                 ← short intro, links back to this handbook
-├── index.html                ← page shell; <title>INE Price Tracker</title>
-├── vite.config.js
+├── index.html                ← page shell, fonts (Instrument Sans + IBM Plex Mono), theme colour
+├── public/favicon.svg        ← the amber tag mark
 ├── .env.example              ← VITE_API_URL template
 └── src/
     ├── main.jsx              ← mounts <App /> into the page
-    ├── App.jsx               ← (Step 1) placeholder showing API + DB status
+    ├── App.jsx               ← (Step 4) layout, auto-refresh (20s, or 4s while a run is active)
     ├── api.js                ← every call to the backend goes through here
-    └── index.css             ← base styles and colour variables
+    ├── index.css             ← (Step 4) the whole dark glass design system (tokens + components)
+    ├── lib/format.js         ← ₹ formatting, "5 min ago", local date/time
+    └── components/
+        ├── SearchPanel.jsx   ← search → open product → pick option → track
+        ├── TrackedList.jsx   ← tracked products with latest price + outcome
+        ├── ProductDetail.jsx ← header, actions, stats, charts, log for the selected product
+        ├── HistoryCharts.jsx ← price chart + stock chart (shared time axis, failures marked)
+        ├── ScrapeLog.jsx     ← every attempt, filterable by outcome
+        ├── RunsPanel.jsx     ← recent runs (proof the scheduler fires)
+        └── OutcomeBadge.jsx  ← hand-drawn SVG shape + label per outcome
 ```
 
-Coming in later steps: `Dockerfile` (backend, Step 5) and the dashboard components (frontend, Step 4).
+Coming in Step 5: `Dockerfile` (backend) and deployment config.
 
 ---
 
@@ -557,7 +567,7 @@ npm run scrape:headed -- --product 2565 --option o2 --chaos  # + SIMULATED slow/
 npm run scrape:headed -- --save                              # real run, saved as trigger 'cli'
 npm run scrape:headed -- --slow 250                          # slower actions (default 120ms)
 ```
-- A **status banner** is drawn at the bottom-left of the store page ("🤖 Scraper · Attempt 1/3 · moving the mouse…"),
+- A **status banner** is drawn at the bottom-left of the store page ("Scraper · Attempt 1/3 · moving the mouse over the price area"),
   so the video explains itself. The terminal prints the same steps with timestamps.
 - `--chaos` injects clearly labelled **simulated** faults with Playwright's network interception:
   - the layout request fails on attempt 1 → our retry with a fresh page
@@ -577,6 +587,53 @@ npm run scrape:headed -- --slow 250                          # slower actions (d
 | End-to-end on **Supabase** via the API: track 3 products → one run scraped all 3 (2 were picked up mid-run) | ✅ 3/3. The **layout rotated from variant 3 to 0** since the morning, and the scraper adapted automatically. Raw price stored: `₹​２​３​,​５​８​２` (full-width digits + zero-width spaces) → 23582 |
 | Failure path (throwaway DB, every price request forced to fail) | ✅ `failed`, price/stock NULL, 3 attempts with reasons. A removed option fails **immediately** (no pointless retries). The run closed with counts |
 | Validation: duplicate → 409, bad option → 400, unknown product → 404, cron without secret → 401, cron during a run → "already in progress", scrape-now cooldown → 429 | ✅ |
+
+---
+
+## 8d. Step 4: the dashboard
+
+### 8d.1 What's on the screen
+| Area | What it shows / does |
+|---|---|
+| **Top bar** | Name, **scheduler status** ("Last scheduled check 18 min ago", or a pulsing "Checking prices now…"), **Export CSV** button |
+| **Track a product** | Search as you type (debounced 250ms, out-of-order responses ignored) → open a product (brand, category, rating, description) → pick one option → **Track this option** (first check starts immediately) |
+| **Tracked** | Each tracked product option with its latest price, the last outcome badge and "x min ago". If the latest check **failed**, it says so and says how old the price shown is, instead of silently showing an old price as current |
+| **Recent runs** | The last runs with trigger (Scheduled / Manual / CLI) and result ("3/3 ok", "nothing due", "running…") |
+| **Product detail** | Category, ID and SKU, name, option, link to the store. **Actions:** Check now, frequency (2 h … daily), Pause/Resume, Remove. **Stats:** current price (+ MRP and % off), stock (+ delivery), price range, checks with data / total (failed, retried). **Last check** line with seller and rating. **Charts** and **scrape log** |
+
+The page refreshes itself every 20 seconds, and every 4 seconds while a run is in progress, so new results appear without reloading.
+
+### 8d.2 Chart decisions (why the charts look the way they do)
+- **Two charts, not one with two y-axes.** Price (₹) and stock (units) are different scales. Dual-axis charts
+  mislead, so they're stacked on a **shared time axis** with a **synced crosshair** (hovering one shows the same moment in both).
+- **Failures are visible.** A failed check has no data, so the line **breaks** there, and a thin **red rule**
+  marks the time. Nothing is interpolated across a failure.
+- **Stock is a step line** (stock stays at a value until the next check), price is a straight line between checks.
+- **Round, evenly spaced ticks** (₹23k / ₹24k / ₹25k; 0 / 50 / 100 / 150) from a small "nice ticks" function.
+- **Colour:** one data colour (blue `#3987e5`), validated for contrast and colour-blindness on the dark surface.
+  Outcome colours (green / amber / red) are reserved for status and **always paired with a shape and a word**,
+  so nothing relies on colour alone.
+- **The scrape log table is the chart's table view**: every value on the chart is also readable there.
+
+### 8d.3 Visual design
+- **Dark, frosted glass**: translucent panels with background blur, hairline borders and a faint top highlight
+  over a near-black backdrop with two soft off-centre glows (teal, amber) and a fine film-grain texture.
+- **One accent colour** (amber) for actions and selection. Blue is kept for data only.
+- **Type:** Instrument Sans for text, IBM Plex Mono for table numbers and axis ticks (tabular figures line up).
+- **No emoji or icon packs.** Outcome markers are three tiny hand-drawn SVG shapes: filled dot = success,
+  broken ring = retried, cross = failed. The logo is a CSS-drawn price tag.
+- **Responsive:** two columns on desktop, one column under 1000px, 16px side gutters on phones and no horizontal scrolling
+  (the log table scrolls inside its own box).
+- **Accessible:** keyboard focus rings, labelled controls, row buttons with full spoken labels, reduced-motion support.
+
+### 8d.4 Verified in the browser (against the real Supabase data)
+- Desktop 1440×1000: the layout, glass panels, backdrop glows, stats and charts all render
+- **Check now** → the button changes to "Checking…" and the run shows "running…". After about 18s, **without a reload**, the new row
+  appeared: it was `Retried` with "store needed 3 tries to load the price" (a real store failure, honestly logged), the chart
+  drew its line, and the runs list showed "1/1 ok"
+- Search "film scan" → 12 results → open "Halvard Film Scanner Ultra" → options shown → select "Standard kit" → Track enabled
+- Phone 375×812: single column, page width = 375 (no sideways scroll)
+- `oxlint`: 1 remaining warning (the data-refresh effect, intended). `vite build` OK. Backend tests 6/6
 
 ---
 
@@ -669,7 +726,7 @@ The page should show **API: ok · Database: ok**.
       routes; history/log API; CSV export; protected cron endpoint; headed-mode script → [section 8c](#8c-step-3-the-price-scraper-runs-history-csv-cron)
   - [x] 3 products tracked on Supabase with their first real data points (Tamarack Film Scanner Nano / Standard kit,
         Veloria E-Reader Go / 64 GB, Saffrix Violin Nano / Studio bundle). You can change these from the dashboard later
-- [ ] **Step 4:** Dashboard UI: search and pick → tracked product cards → price/stock chart → scrape log → Export CSV
+- [x] **Step 4:** Dashboard UI: search and pick → tracked products → price/stock charts → scrape log → runs → Export CSV → [section 8d](#8d-step-4-the-dashboard)
 - [ ] **Step 5:** Deploy: Supabase → Render (Docker with Playwright) → Vercel → cron-job.org every 2 h;
       track 2–3 products **immediately** so real history builds up
 - [ ] **Step 6:** README, DESIGN_NOTE, headed-run screen recording (you), submit the form
@@ -701,6 +758,10 @@ the project, design the schema and write code. Every piece is reviewed and expla
 | 13 | 3 | Adding several products only scraped the first one immediately | Others would wait up to 2 h because a run was already in progress | A run now picks up products added while it's running |
 | 14 | 3 | Stored the seller name as displayed | It contained a hidden zero-width character (`Mar​lowe & Co`) | Clean invisible characters from display fields (the raw price text is kept untouched as evidence) |
 | 15 | 3 | `npm test` pointed Node at a folder | Node 24 doesn't accept a directory there, so the tests didn't run | Use a file pattern (`test/*.test.js`) |
+| 16 | 4 | Put the page colour on `<body>` | It painted over the fixed backdrop layers, so the glows and grain were invisible | Page colour on `:root`, body transparent |
+| 17 | 4 | Let the chart pick its axis range from padded min/max | Uneven ticks like ₹23.3k / ₹23.7k / ₹24.1k and 0 / 35 / 70 / 132 | A "nice ticks" function (1, 2, 2.5, 5 × 10ⁿ steps) |
+| 18 | 4 | Showed the price range as "min – max" | With one data point it read "₹23,582 – ₹23,582" | Show a single value and "no change yet" |
+| 19 | 4 | Remove cleared the selection after the request, whether or not it succeeded | A failed delete would still have deselected the product | Clear the selection only after the delete succeeds |
 
 ---
 

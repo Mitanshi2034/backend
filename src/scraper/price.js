@@ -398,7 +398,7 @@ async function showOverlay(page, message) {
           'pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.3)'
         document.body.appendChild(el)
       }
-      el.textContent = `🤖 Scraper · ${msg}`
+      el.textContent = `Scraper · ${msg}`
     }, message)
     .catch(() => {})
 }
@@ -408,14 +408,14 @@ async function installFaults(context, state, attempt, log) {
   const once = (key) => !state.used[key] && (state.used[key] = true)
   if (state.failManifestOnFirstAttempt && attempt === 1) {
     await context.route('**/api/v2/ui/manifest', (route) => {
-      log('  ⚡ [simulated fault] layout manifest -> HTTP 503')
+      log('  [simulated fault] layout manifest -> HTTP 503')
       route.fulfill({ status: 503, body: 'Service Unavailable' })
     })
   }
   if (state.slowHandshakeMs) {
     await context.route('**/api/v2/handshake', async (route) => {
       if (route.request().method() === 'GET' && once(`slow-${attempt}`)) {
-        log(`  ⚡ [simulated fault] delaying handshake by ${state.slowHandshakeMs / 1000}s (slow response)`)
+        log(`  [simulated fault] delaying handshake by ${state.slowHandshakeMs / 1000}s (slow response)`)
         await sleep(state.slowHandshakeMs)
       }
       route.continue()
@@ -425,7 +425,7 @@ async function installFaults(context, state, attempt, log) {
     await context.route('**/api/v2/items/*/quote*', (route) => {
       state.used.quoteFailures = (state.used.quoteFailures ?? 0) + 1
       if (state.used.quoteFailures <= state.failQuotes) {
-        log(`  ⚡ [simulated fault] price quote -> HTTP 503 (${state.used.quoteFailures}/${state.failQuotes})`)
+        log(`  [simulated fault] price quote -> HTTP 503 (${state.used.quoteFailures}/${state.failQuotes})`)
         return route.fulfill({ status: 503, body: 'upstream error' })
       }
       route.continue()
