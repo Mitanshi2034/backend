@@ -27,6 +27,7 @@
    - [Step 3: the price scraper, runs, history, CSV, cron](#8c-step-3-the-price-scraper-runs-history-csv-cron)
    - [Step 4: the dashboard](#8d-step-4-the-dashboard)
    - [Step 5: deployment](#8e-step-5-deployment)
+   - [Step 6: submission](#8f-step-6-submission)
 9. [Running the project locally](#9-running-the-project-locally)
 10. [Environment variables](#10-environment-variables)
 11. [Progress tracker](#11-progress-tracker)
@@ -127,8 +128,8 @@ Locally they sit side by side in one folder (`mitu_project/backend` and `mitu_pr
 ```
 backend/
 ├── HOW_TO.md                 ← this handbook
-├── README.md                 ← (Step 6) short setup guide required by the assignment
-├── DESIGN_NOTE.md            ← (Step 6) reliability, trade-offs, AI usage
+├── README.md                 ← (Step 6) setup, schedule, env vars, API (required by the assignment)
+├── DESIGN_NOTE.md            ← (Step 6) reliability, trade-offs, AI usage (required by the assignment)
 ├── docs/
 │   └── STORE_RECON.md        ← raw technical notes from inspecting the store
 ├── .gitignore                ← keeps node_modules and .env (secrets) out of Git
@@ -734,6 +735,48 @@ happens: Render holds the request while waking and our endpoint answers straight
 
 ---
 
+## 8f. Step 6: submission
+
+### 8f.1 Documents
+| File | Required by the assignment? | Contents |
+|---|---|---|
+| `README.md` (backend) | ✅ setup, schedule, env vars | Live links, how it works, **scraping schedule**, local setup, commands, headed mode, **environment variables**, API, CSV format, deployment |
+| `README.md` (frontend) | – | Live link, features, run locally, `VITE_API_URL`, Vercel |
+| `DESIGN_NOTE.md` | ✅ | What made the store hard · how reliability was achieved · trade-offs · **how AI was used and what it got wrong first** |
+| `HOW_TO.md` | – (our handbook) | Everything, in detail |
+
+> **Check the AI section of DESIGN_NOTE.md** and make sure it describes exactly how you worked. The assignment requires
+> an honest disclosure, and the interviewers may ask about it.
+
+### 8f.2 Recording the headed run (2–4 minutes)
+**Before recording:**
+- Close other windows, set the screen to 1080p if possible, and open a terminal in `backend/` with a large font.
+- Do one practice run (below) so Chromium is warm.
+- Use QuickTime (File → New Screen Recording) or ⌘⇧5 on macOS, and record the whole screen with the microphone on.
+
+**Script:**
+
+| Time | Do this | Say (roughly) |
+|---|---|---|
+| 0:00–0:20 | Show the live dashboard (https://ine-tracker-price.vercel.app): tracked products, charts, scrape log, recent runs | "This tracks INE's mock store every 2 hours via cron-job.org. Every attempt is logged, failures included." |
+| 0:20–1:30 | `npm run scrape:headed -- --product 2565 --option o2` | Narrate the banner as it goes: "It opens the product page, reads the layout manifest, selects the option by its store ID… waits out and dismisses the cookie popup… moves the mouse to pass the interaction gate… clicks and checks the click registered… reads the one real price, not the hidden decoys, and parses it strictly." Point at the terminal result line. |
+| 1:30–3:00 | `npm run scrape:headed -- --product 2565 --option o2 --chaos` | "Now with simulated faults. First the layout request fails (503), so the attempt fails and it **retries with a fresh page**. Then the handshake is **5 seconds slow**, and it waits. Then two **price requests fail with 503**; the page retries and the result is labelled **retried**, not success." Show the final RESULT line: `RETRIED · attempts 2 · in-page retries 2`. |
+| 3:00–3:30 | Back on the dashboard: open the scrape log, filter **Retried** / **Failed**, click **Export CSV** | "Failed attempts are stored with empty price and stock. Here's the CSV with one row per attempt." |
+
+If a real store failure happens during the normal run (a 503, a dropped click, a stale quote), point it out, because it's the best evidence.
+
+### 8f.3 Submission checklist (form: https://forms.gle/6LGyJV9yi6W1gna18)
+- [ ] Live site link: https://ine-tracker-price.vercel.app
+- [ ] GitHub repo(s): https://github.com/Mitanshi2034/backend (+ https://github.com/Mitanshi2034/frontend)
+- [ ] Screen recording (2–4 min, headed mode, slow/failing responses), uploaded as a shareable link (Google Drive/YouTube unlisted)
+- [ ] README with setup, schedule, env vars (backend README)
+- [ ] Design note (backend `DESIGN_NOTE.md`)
+- [ ] PDF resume
+- [ ] Before submitting: the dashboard shows several **Scheduled** runs in "Recent runs"
+- [ ] Revoke the GitHub token that was pasted in chat
+
+---
+
 ## 9. Running the project locally
 
 ### 9.1 Prerequisites
@@ -826,8 +869,9 @@ The page should show **API: ok · Database: ok**.
 - [x] **Step 4:** Dashboard UI: search and pick → tracked products → price/stock charts → scrape log → runs → Export CSV → [section 8d](#8d-step-4-the-dashboard)
 - [x] **Step 5:** Deploy: Supabase → Render (Docker with Playwright) → Vercel → cron-job.org every 2 h → [section 8e](#8e-step-5-deployment)
   - [x] Scrape job live (every 2 h, POST + `x-cron-secret`), first scheduled run succeeded
-  - [ ] Keep-warm job (GET `/api/health` every 10 min)
-- [ ] **Step 6:** README, DESIGN_NOTE, headed-run screen recording (you), submit the form
+  - [x] Keep-warm job (GET `/api/health` every 10 min)
+- [x] **Step 6 (docs):** README (both repos), DESIGN_NOTE → [section 8f](#8f-step-6-submission)
+- [ ] **Step 6 (you):** headed-run recording, resume, submit the form (checklist in 8f.3)
 
 ---
 
