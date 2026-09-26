@@ -1,0 +1,23 @@
+{
+  "name": "ine-price-tracker-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "db:migrate": "node scripts/migrate.js",
+    "catalog:sync": "node scripts/sync-catalog.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "pg": "^8.23.0",
+    "playwright": "1.63.0"
+  }
+}
