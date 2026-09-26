@@ -88,12 +88,14 @@ CREATE TABLE IF NOT EXISTS scrape_attempts (
   stock              INTEGER,
   mrp                NUMERIC(12, 2),
   currency           TEXT,
-  attempts           SMALLINT NOT NULL DEFAULT 1 CHECK (attempts >= 1),
+  attempts           SMALLINT NOT NULL DEFAULT 1 CHECK (attempts >= 1),  -- scraper-level tries (fresh browser page each)
+  page_retries       SMALLINT NOT NULL DEFAULT 0,  -- price re-requested inside the page (store retry / "Check again")
   duration_ms        INTEGER,
   error              TEXT,              -- why it failed, or what went wrong before a retry succeeded
   raw_price_text     TEXT,              -- the exact text we parsed, kept as evidence
   layout_variant     INTEGER,           -- store's manifest variant at scrape time
   trigger            TEXT,
+  extra              JSONB,             -- bonus details shown on the dashboard (member price, rating, seller, delivery...)
 
   -- Guardrail 1: a failed attempt stores NO data; a successful one MUST have
   -- a positive price and a non-negative stock. Wrong/empty data cannot be saved.
@@ -104,12 +106,23 @@ CREATE TABLE IF NOT EXISTS scrape_attempts (
       AND stock IS NOT NULL AND stock >= 0)
   ),
 
-  -- Guardrail 2: labels are honest. "success" means first try, "retried" means more than one try.
+  -- Guardrail 2: labels are honest. "success" = worked first time with no retry at any level;
+  -- "retried" = worked, but only after our retry or a price re-request inside the page.
   CONSTRAINT scrape_attempts_outcome_matches_attempts CHECK (
-    (outcome = 'success' AND attempts = 1)
-    OR (outcome = 'retried' AND attempts > 1)
+    (outcome = 'success' AND attempts = 1 AND page_retries = 0)
+    OR (outcome = 'retried' AND (attempts > 1 OR page_retries > 0))
     OR outcome = 'failed'
   )
+);
+
+-- Upgrades for databases created before these columns existed (safe to re-run).
+ALTER TABLE scrape_attempts ADD COLUMN IF NOT EXISTS page_retries SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE scrape_attempts ADD COLUMN IF NOT EXISTS extra JSONB;
+ALTER TABLE scrape_attempts DROP CONSTRAINT IF EXISTS scrape_attempts_outcome_matches_attempts;
+ALTER TABLE scrape_attempts ADD CONSTRAINT scrape_attempts_outcome_matches_attempts CHECK (
+  (outcome = 'success' AND attempts = 1 AND page_retries = 0)
+  OR (outcome = 'retried' AND (attempts > 1 OR page_retries > 0))
+  OR outcome = 'failed'
 );
 
 CREATE INDEX IF NOT EXISTS scrape_attempts_product_time_idx

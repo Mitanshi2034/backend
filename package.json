@@ -11,7 +11,9 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "db:migrate": "node scripts/migrate.js",
-    "catalog:sync": "node scripts/sync-catalog.js"
+    "catalog:sync": "node scripts/sync-catalog.js",
+    "test": "node --test test/*.test.js",
+    "scrape:headed": "node scripts/scrape-headed.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

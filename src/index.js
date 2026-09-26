@@ -3,6 +3,10 @@ import cors from 'cors'
 import { config } from './config.js'
 import healthRouter from './routes/health.js'
 import catalogRouter from './routes/catalog.js'
+import trackedRouter from './routes/tracked.js'
+import runsRouter from './routes/runs.js'
+import exportRouter from './routes/export.js'
+import cronRouter from './routes/cron.js'
 import { ensureCatalogFresh } from './scraper/catalog.js'
 
 const app = express()
@@ -19,11 +23,10 @@ app.use(express.json())
 app.get('/', (_req, res) => res.json({ name: 'INE Price Tracker API', health: '/api/health' }))
 app.use('/api/health', healthRouter)
 app.use('/api/catalog', catalogRouter)
-
-// Routes added in later steps:
-//   /api/tracked   add / list / remove tracked products, history and scrape log
-//   /api/export    CSV download of every scrape attempt
-//   /api/cron      endpoint cron-job.org calls every 2 hours
+app.use('/api/tracked', trackedRouter)
+app.use('/api/runs', runsRouter)
+app.use('/api/export', exportRouter)
+app.use('/api/cron', cronRouter)
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
 

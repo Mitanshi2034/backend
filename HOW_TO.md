@@ -18,6 +18,7 @@
 7. [The database explained](#7-the-database-explained)
 8. [Step 1: how the project was created](#8-step-1-how-the-project-was-created)
    - [Step 2: catalog sync and search](#8b-step-2-catalog-sync-and-search)
+   - [Step 3: the price scraper, runs, history, CSV, cron](#8c-step-3-the-price-scraper-runs-history-csv-cron)
 9. [Running the project locally](#9-running-the-project-locally)
 10. [Environment variables](#10-environment-variables)
 11. [Progress tracker](#11-progress-tracker)
@@ -127,7 +128,10 @@ backend/
 ├── .env.example              ← template of every environment variable (copy to .env)
 ├── scripts/
 │   ├── migrate.js            ← runs schema.sql against the database
-│   └── sync-catalog.js       ← (Step 2) collect all 960 products now, with progress output
+│   ├── sync-catalog.js       ← (Step 2) collect all 960 products now, with progress output
+│   └── scrape-headed.js      ← (Step 3) visible-browser run for watching/recording (+ --chaos faults)
+├── test/
+│   └── parse.test.js         ← (Step 3) price/stock parser tests using the store's own formatting code
 └── src/
     ├── index.js              ← creates the Express app: CORS, JSON, routes, error handler;
     │                           on startup, syncs the catalog if it's empty or older than 24 h
@@ -139,10 +143,18 @@ backend/
     │   └── requireSecret.js  ← (Step 2) checks the x-cron-secret header on "start work" endpoints
     ├── scraper/
     │   ├── http.js           ← (Step 2) polite HTTP client: gap between requests, timeout, retry+backoff, validation
-    │   └── catalog.js        ← (Step 2) catalog sync algorithm, search, product details
+    │   ├── catalog.js        ← (Step 2) catalog sync algorithm, search, product details
+    │   ├── parse.js          ← (Step 3) strict price/stock text → number (refuses anything ambiguous)
+    │   ├── browser.js        ← (Step 3) launches Chromium (one per run)
+    │   ├── price.js          ← (Step 3) THE price scraper: every trap's defence, retries, validation
+    │   └── runner.js         ← (Step 3) a "run": pick products, scrape one by one, record every attempt
     └── routes/
         ├── health.js         ← GET /api/health: is the API up, is the DB reachable?
-        └── catalog.js        ← (Step 2) /api/catalog/search, /status, /sync, /products/:id
+        ├── catalog.js        ← (Step 2) /api/catalog/search, /status, /sync, /products/:id
+        ├── tracked.js        ← (Step 3) add/list/update/delete tracked products, history, "scrape now"
+        ├── runs.js           ← (Step 3) recent scrape runs (proof the scheduler fired)
+        ├── export.js         ← (Step 3) CSV download of every scrape attempt
+        └── cron.js           ← (Step 3) POST /api/cron/scrape, called by cron-job.org
 ```
 
 **frontend repo**
@@ -159,9 +171,7 @@ frontend/
     └── index.css             ← base styles and colour variables
 ```
 
-Coming in later steps: `src/scraper/price.js` (Playwright price scraper + parsers),
-`src/routes/{tracked,export,cron}.js`, `scripts/scrape-headed.js`, `Dockerfile` (backend),
-and the dashboard components (frontend).
+Coming in later steps: `Dockerfile` (backend, Step 5) and the dashboard components (frontend, Step 4).
 
 ---
 
@@ -463,6 +473,113 @@ after retries (reported honestly, never a fake result).
 
 ---
 
+## 8c. Step 3: the price scraper, runs, history, CSV, cron
+
+This is the core of the assignment. **The file to know best is [src/scraper/price.js](src/scraper/price.js).**
+
+### 8c.1 What one scrape does, step by step
+| # | Step | Trap it beats (section 5.5) |
+|---|---|---|
+| 1 | Open a **fresh browser context** (clean cookies and state) and start **listening to the page's own network traffic** | – |
+| 2 | Register an **auto-dismiss handler** for the cookie popup: whenever it blocks a click, Playwright clicks "Reject" until it's gone | 3 |
+| 3 | Open `/item/:id`. Wait for the heading, or the store's "Couldn't load this product" error | 11 |
+| 4 | **Check we're on the right product**: the product JSON the page loaded has our ID, and the heading matches its name | shifted page |
+| 5 | Take the **layout manifest the page itself loaded** (class names change over time). If it failed, this attempt fails | 7 |
+| 6 | Find our option **by the store's option ID** (`o2`), click its chip, and check `aria-pressed="true"` | 1 |
+| 7 | Wait out the popup window (5.5s after load) and dismiss it before moving the mouse | 3 |
+| 8 | **Move the mouse** across the price box in 14 small steps, 60ms apart, then wait 700ms, until the button enables | 4 |
+| 9 | Click "Check today's price" and **confirm the page reacted** (the panel leaves the locked state). If not, click again (up to 4 times) | 2 |
+| 10 | Wait up to **60s** for the result: ready, or the store's own "Couldn't load the price after N attempts" | 11 |
+| 11 | If the quote says **"Refreshing prices"** (stale), don't read it. Click "Check again" and wait for a fresh quote (up to 3 times) | 9 |
+| 12 | Read the rendered quote in one pass. **Exactly one** element with the manifest's price class, visible, **and** a second, independent method (the only visible child of the price row that isn't MRP/member price/badge/status) must pick **the same element** | 5, 6 |
+| 13 | Check the **selected option** is still ours **and** the last `quote?opt=` request the page made was for our option, with HTTP 200 | 1 |
+| 14 | **Parse strictly** (`parsePrice`, `parseStock`), then sanity-check: price > 0, price ≤ MRP, stock 0 ⇔ "Sold out" badge | 8, 10 |
+
+If any step fails, the attempt throws a `ScrapeError` with a clear message and a `kind`
+(`load`, `structure`, `store`, `timeout`, `validation`, `option`).
+
+### 8c.2 Four levels of retry
+1. **The store's own retries**: the page retries its price request up to 6 times. We count these (`page_retries`).
+2. **"Check again"** for stale quotes (up to 3), also counted in `page_retries`.
+3. **Our retries**: up to **3 attempts** per product, each in a **fresh browser context**, waiting 3s and then 6s.
+   Each attempt has a hard **120s ceiling**. Things that can't be fixed by retrying (e.g. the option no longer exists)
+   fail immediately.
+4. **The next scheduled run**, 2 hours later.
+
+### 8c.3 Outcome rules (and who enforces them)
+| Outcome | Meaning | Enforced by |
+|---|---|---|
+| `success` | Correct data on the first attempt, **no retry at any level** (`attempts = 1`, `page_retries = 0`) | runner **and** DB constraint |
+| `retried` | Correct data, but only after our retry **or** an in-page re-request | runner **and** DB constraint |
+| `failed` | No trustworthy data after all attempts → price and stock **NULL**, with the reason for every attempt in `error` | runner **and** DB constraint |
+
+If the database ever refuses a row (a guardrail fired), the runner **still records a `failed` row** explaining why,
+so an attempt is never silently lost.
+
+### 8c.4 Runs ([src/scraper/runner.js](src/scraper/runner.js))
+- `createRun(trigger)` inserts a `scrape_runs` row. The unique index makes a second concurrent run fail
+  (`RunInProgressError`). A `running` row older than 30 minutes (from a server that died) is marked `abandoned` first.
+- `executeRun(run)`:
+  - picks the products that are due (`last_scraped_at` older than their interval minus 15 minutes of tolerance)
+  - scrapes them **one by one** with **one shared browser**, relaunching it if it crashes
+  - writes **one row per product** (in a transaction, together with `last_scraped_at`)
+  - picks up products **added while it was running**
+  - always closes the run row with counts
+- The cron endpoint and the "scrape now" button **reply immediately** (`202`) and run in the background.
+
+### 8c.5 API reference (added in Step 3)
+| Method | Path | Auth | What it does |
+|---|---|---|---|
+| GET | `/api/tracked` | – | All tracked products with latest price/stock/outcome, last success, attempt counts, min/max price, extra info |
+| POST | `/api/tracked` | – | `{store_product_id, option_id}` → checks both against the live store, saves, **starts the first scrape immediately**. `409` if already tracked, `400` bad option, `404` unknown product, max 15 |
+| PATCH | `/api/tracked/:id` | – | `{scrape_interval_minutes (60–1440), is_active}` (bonus: per-product frequency, pause) |
+| DELETE | `/api/tracked/:id` | – | Stop tracking (also deletes its history) |
+| GET | `/api/tracked/:id/history?limit=500` | – | `{product, attempts[]}`: the scrape log. The chart uses the non-failed rows |
+| POST | `/api/tracked/:id/scrape` | – | "Scrape now": `202`. `429` if scraped less than 2 minutes ago, `409` if a run is in progress |
+| GET | `/api/runs?limit=20` | – | Recent runs: trigger, status, counts, times |
+| GET | `/api/export/scrapes.csv` | – | CSV download (see below) |
+| POST | `/api/cron/scrape` | `x-cron-secret` | Scheduled run: `202 {started, run_id}`, or `200 {started:false}` if a run is still going |
+
+**CSV format** (one row per attempt, oldest first, `\r\n` line endings, RFC 4180 quoting):
+```
+store_product_id,product_name,selected_option,timestamp,price,stock,outcome
+2565,Tamarack Film Scanner Nano,Standard kit,2026-09-26T15:09:36.716Z,23582,114,success
+2630,Saffrix Violin Nano,Studio bundle,2026-09-26T15:09:57.431Z,102578,100,retried
+2565,Tamarack Film Scanner Nano,Standard kit,2026-09-26T17:00:04.120Z,,,failed      ← (example) failed: price & stock empty
+```
+
+### 8c.6 Headed mode (for the screen recording)
+```bash
+cd backend
+npm run scrape:headed                                        # all tracked products, visible browser, nothing saved
+npm run scrape:headed -- --product 2565 --option o2          # one product option
+npm run scrape:headed -- --product 2565 --option o2 --chaos  # + SIMULATED slow/failing responses
+npm run scrape:headed -- --save                              # real run, saved as trigger 'cli'
+npm run scrape:headed -- --slow 250                          # slower actions (default 120ms)
+```
+- A **status banner** is drawn at the bottom-left of the store page ("🤖 Scraper · Attempt 1/3 · moving the mouse…"),
+  so the video explains itself. The terminal prints the same steps with timestamps.
+- `--chaos` injects clearly labelled **simulated** faults with Playwright's network interception:
+  - the layout request fails on attempt 1 → our retry with a fresh page
+  - the handshake is delayed by 5s → we wait for a slow response
+  - two price requests return 503 → the store's retry, then the result is labelled `retried`
+
+  Chaos results are **never saved**.
+- Suggested recording: first a normal run (real traps: popup, dropped click, maybe a real 503), then a `--chaos` run.
+
+### 8c.7 Test results
+| Test | Result |
+|---|---|
+| Parser unit tests (`npm test`): ~4,600 prices generated with the **store's own formatting code**, 7 formats × 2 carriers, + rejection cases + stock templates | ✅ 6/6 |
+| DB guardrails (PGlite): 19 cases incl. new `page_retries` rules | ✅ 19/19 |
+| Live scrapes (4 product options) | ✅ 4/4 correct. Real traps seen: **2 stale "Refreshing" quotes** caught and re-requested, **a real store 503** recovered in-page (→ `retried`), `Rs. 27,705.00` format, **Sold out** → 0 |
+| Chaos run (manifest 503 + 5s slow + 2 quote 503s + a dropped click) | ✅ same correct price, `retried`, attempts 2, in-page retries 2 |
+| End-to-end on **Supabase** via the API: track 3 products → one run scraped all 3 (2 were picked up mid-run) | ✅ 3/3. The **layout rotated from variant 3 to 0** since the morning, and the scraper adapted automatically. Raw price stored: `₹​２​３​,​５​８​２` (full-width digits + zero-width spaces) → 23582 |
+| Failure path (throwaway DB, every price request forced to fail) | ✅ `failed`, price/stock NULL, 3 attempts with reasons. A removed option fails **immediately** (no pointless retries). The run closed with counts |
+| Validation: duplicate → 409, bad option → 400, unknown product → 404, cron without secret → 401, cron during a run → "already in progress", scrape-now cooldown → 429 | ✅ |
+
+---
+
 ## 9. Running the project locally
 
 ### 9.1 Prerequisites
@@ -507,6 +624,8 @@ The page should show **API: ok · Database: ok**.
 | backend | `npm start` | Start the API (production, used by Render) |
 | backend | `npm run db:migrate` | Create or update the tables |
 | backend | `npm run catalog:sync` | Collect all store products into `catalog_products` (about 1 minute) |
+| backend | `npm run scrape:headed` | Visible-browser scrape (see 8c.6 for options) |
+| backend | `npm test` | Parser unit tests |
 | frontend | `npm run dev` | Start the Vite dev server |
 | frontend | `npm run build` | Build static files into `dist/` (used by Vercel) |
 | frontend | `npm run lint` | Lint with oxlint |
@@ -546,8 +665,10 @@ The page should show **API: ok · Database: ok**.
         `/api/health` → `database: ok`
 - [x] **Step 2:** Catalog sync + search API (HTTP only): polite HTTP client with retries, 960/960 products
       synced into Supabase, `GET /api/catalog/search?q=`, product details and options → [section 8b](#8b-step-2-catalog-sync-and-search)
-- [ ] **Step 3:** Price scraper (Playwright) with retries, validation and honest logging; tracked-product
-      routes; history/log API; CSV export; protected cron endpoint; headed-mode script
+- [x] **Step 3:** Price scraper (Playwright) with retries, validation and honest logging; tracked-product
+      routes; history/log API; CSV export; protected cron endpoint; headed-mode script → [section 8c](#8c-step-3-the-price-scraper-runs-history-csv-cron)
+  - [x] 3 products tracked on Supabase with their first real data points (Tamarack Film Scanner Nano / Standard kit,
+        Veloria E-Reader Go / 64 GB, Saffrix Violin Nano / Studio bundle). You can change these from the dashboard later
 - [ ] **Step 4:** Dashboard UI: search and pick → tracked product cards → price/stock chart → scrape log → Export CSV
 - [ ] **Step 5:** Deploy: Supabase → Render (Docker with Playwright) → Vercel → cron-job.org every 2 h;
       track 2–3 products **immediately** so real history builds up
@@ -574,6 +695,12 @@ the project, design the schema and write code. Every piece is reviewed and expla
 | 7 | 2 | Collected the catalog by sampling listing pages every ~350ms | 142 requests and **24 × 429** rate-limit errors | 600ms global gap + backoff honouring `Retry-After` + gap fill by ID → 75–92 requests, **0** errors |
 | 8 | 2 | The HTTP client reported `attempts = maxAttempts` on every failure | A 404 (tried once) would have been logged as "4 attempts", which isn't honest | Track the real attempt number. Verified: 404 → `attempts=1` |
 | 9 | 2 | The first sync loop had no stop condition for a dead store | If the store were down, it would keep retrying 400 pages × 4 attempts for hours | Stop after 5 failed listing requests in a row and keep the existing catalog |
+| 10 | 3 | The first price parser treated any `,dd` ending as decimals | `₹1,45` would have been stored as **₹1.45**. Caught by our own rejection test | A comma is a decimal only in euro style (`1.45.800,00` / `…,00`). Otherwise the grouping check rejects it |
+| 11 | 3 | The first outcome rule only counted **our** retries | A price the store loaded on its 3rd internal try would have been labelled `success`, which isn't honest | Added `page_retries` (store retries + "Check again") and made the DB constraint require `retried` in that case |
+| 12 | 3 | Checked the product JSON as soon as the heading appeared | Race: the heading can render before the network listener has read the JSON | Wait for the data explicitly (up to 5s) |
+| 13 | 3 | Adding several products only scraped the first one immediately | Others would wait up to 2 h because a run was already in progress | A run now picks up products added while it's running |
+| 14 | 3 | Stored the seller name as displayed | It contained a hidden zero-width character (`Mar​lowe & Co`) | Clean invisible characters from display fields (the raw price text is kept untouched as evidence) |
+| 15 | 3 | `npm test` pointed Node at a folder | Node 24 doesn't accept a directory there, so the tests didn't run | Use a file pattern (`test/*.test.js`) |
 
 ---
 
@@ -627,6 +754,33 @@ Retries use exponential backoff with random jitter.
 Every response is validated against the shape we expect before it's used. Invalid JSON or a wrong shape counts
 as a failed attempt and is retried. If it keeps happening, the error is reported with `kind: "shape"`, which is
 also the basis for detecting when the store's structure changes.
+
+**Q: Walk me through one scrape.**
+Fresh browser context → open the product page → check it's the right product → take the layout manifest the page
+loaded → select our option by ID → wait out and dismiss the cookie popup → move the mouse over the price area until
+the button enables → click and confirm the click registered → wait for the quote → reject stale "Refreshing" quotes
+→ read the one real price element (confirmed by two independent methods) → check the option in the UI and in the
+network request → parse strictly → sanity-check → save one row. (Section 8c.1.)
+
+**Q: How do you know you didn't read a decoy price?**
+Three independent checks must agree. It's the element with the class from the store's own layout manifest. It's
+visible (the decoys are `display:none`). And a second method (the only visible child of the price row that isn't
+the MRP, member price, badge or a status label) picks the same element. If they disagree, the attempt fails as a
+"structure changed" error instead of guessing.
+
+**Q: How do you know the price is for the right option?**
+We select the option by the store's option ID and check `aria-pressed`. We also watch the network: the last
+`/quote?opt=…` request the page made must be for our option ID and must have returned 200.
+
+**Q: What is the difference between an attempt and a page retry?**
+An attempt is our retry with a completely fresh browser context (up to 3). A page retry is the price being
+requested again inside the same page, either the store's own retry or our "Check again" for a stale quote.
+Either kind means the outcome is `retried`, not `success`.
+
+**Q: How did you record the headed video showing failures if failures are random?**
+Real traps (popup, ignored clicks, stale quotes, occasional 503s) appear naturally. To show slow and failing
+responses on demand, `--chaos` uses Playwright's network interception to inject clearly labelled simulated faults:
+a failed layout request, a 5-second delay and two 503s. Those results are never saved to the database.
 
 **Q: How does the frontend talk to the backend securely?**
 CORS allows only our frontend origins. The cron endpoint requires a secret header. The database is
