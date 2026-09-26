@@ -1,0 +1,23 @@
+# Render Blueprint: lets Render create the service from this file
+# (Dashboard > New > Blueprint > pick this repo). Secrets are entered in the dashboard.
+services:
+  - type: web
+    name: ine-price-tracker-api
+    runtime: docker
+    plan: free
+    region: singapore # closest Render region to Supabase ap-south-1 (Mumbai)
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false # Supabase Session pooler URL, entered in the dashboard
+      - key: CRON_SECRET
+        sync: false # same value cron-job.org sends in x-cron-secret
+      - key: CORS_ORIGIN
+        sync: false # your Vercel URL, e.g. https://ine-price-tracker.vercel.app
+      - key: DATABASE_SSL
+        value: "true"
+      - key: HEADLESS
+        value: "true"
+      - key: STORE_BASE_URL
+        value: https://demo.inelabteamdev.com

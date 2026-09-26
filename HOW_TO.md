@@ -20,6 +20,7 @@
    - [Step 2: catalog sync and search](#8b-step-2-catalog-sync-and-search)
    - [Step 3: the price scraper, runs, history, CSV, cron](#8c-step-3-the-price-scraper-runs-history-csv-cron)
    - [Step 4: the dashboard](#8d-step-4-the-dashboard)
+   - [Step 5: deployment](#8e-step-5-deployment)
 9. [Running the project locally](#9-running-the-project-locally)
 10. [Environment variables](#10-environment-variables)
 11. [Progress tracker](#11-progress-tracker)
@@ -127,6 +128,8 @@ backend/
 ├── .gitignore                ← keeps node_modules and .env (secrets) out of Git
 ├── package.json              ← dependencies and scripts (start, dev, db:migrate, catalog:sync)
 ├── .env.example              ← template of every environment variable (copy to .env)
+├── Dockerfile                ← (Step 5) Playwright-based image for Render
+├── render.yaml               ← (Step 5) Render Blueprint (service settings + env var list)
 ├── scripts/
 │   ├── migrate.js            ← runs schema.sql against the database
 │   ├── sync-catalog.js       ← (Step 2) collect all 960 products now, with progress output
@@ -181,7 +184,6 @@ frontend/
         └── OutcomeBadge.jsx  ← hand-drawn SVG shape + label per outcome
 ```
 
-Coming in Step 5: `Dockerfile` (backend) and deployment config.
 
 ---
 
@@ -634,6 +636,83 @@ The page refreshes itself every 20 seconds, and every 4 seconds while a run is i
 - Search "film scan" → 12 results → open "Halvard Film Scanner Ultra" → options shown → select "Standard kit" → Track enabled
 - Phone 375×812: single column, page width = 375 (no sideways scroll)
 - `oxlint`: 1 remaining warning (the data-refresh effect, intended). `vite build` OK. Backend tests 6/6
+
+---
+
+## 8e. Step 5: deployment
+
+```
+ Vercel (frontend)  ──calls──▶  Render (backend, Docker + Chromium)  ──SQL──▶  Supabase
+                                   ▲                 ▲
+          cron-job.org: POST /api/cron/scrape        cron-job.org: GET /api/health
+          every 2 hours (the schedule)                every 10 min (keeps it awake)
+```
+
+### 8e.1 Files added for deployment
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Built on Microsoft's official **Playwright image** (`mcr.microsoft.com/playwright:v1.63.0-noble`), which already has Node, Chromium and all the Linux libraries Chromium needs. Its tag matches the pinned `playwright` version. Runs `npm ci --omit=dev`, then `node src/index.js` |
+| `.dockerignore` | Keeps `node_modules`, `.env` (secrets) and git history out of the image |
+| `render.yaml` | Render Blueprint: Docker, free plan, **Singapore** (nearest to Supabase Mumbai), health check `/api/health`, environment variable list |
+| `src/index.js` (shutdown) | On `SIGTERM` (deploy, restart, sleep) any `running` run is immediately marked `abandoned` with the reason, so it never blocks the next scheduled run |
+| `src/scraper/browser.js` | `--disable-dev-shm-usage`: Docker's shared memory is tiny, and Chromium crashes without this flag |
+
+**Why Docker on Render?** Render's normal Node environment doesn't have Chromium's system libraries. The official
+Playwright image does, so the same scraper that works locally works on Render.
+
+### 8e.2 Render (backend): one time
+1. https://render.com → **Sign in with GitHub** (Mitanshi's account) and allow access to the `backend` repo.
+2. **New → Web Service** → pick `Mitanshi2034/backend`.
+   - Language/Runtime: **Docker** (detected from the Dockerfile) · Branch: `main` · Region: **Singapore** · Instance type: **Free**
+   - Name: `ine-price-tracker-api` (the URL becomes `https://ine-price-tracker-api.onrender.com`, or similar if taken)
+3. **Environment Variables** (copy the first two values from your local `backend/.env`):
+
+   | Key | Value |
+   |---|---|
+   | `DATABASE_URL` | the Supabase Session pooler URL (same as `backend/.env`) |
+   | `CRON_SECRET` | same as `backend/.env` |
+   | `CORS_ORIGIN` | `http://localhost:5173` for now (the Vercel URL is added in step 8e.3) |
+   | `DATABASE_SSL` | `true` |
+   | `HEADLESS` | `true` |
+   | `STORE_BASE_URL` | `https://demo.inelabteamdev.com` |
+4. **Advanced → Health Check Path:** `/api/health` → **Deploy Web Service**. The first build takes about 5–10 minutes
+   (the Playwright image is large).
+5. Check it: open `https://<your-service>.onrender.com/api/health` → `{"status":"ok","database":"ok",…}`.
+
+### 8e.3 Vercel (frontend): one time
+1. https://vercel.com → **Continue with GitHub** (Mitanshi) → **Add New → Project** → import `Mitanshi2034/frontend`.
+2. Framework preset **Vite** (auto-detected; build `npm run build`, output `dist`).
+3. **Environment Variables:** `VITE_API_URL` = `https://<your-service>.onrender.com` (no trailing slash) → **Deploy**.
+4. Note the URL (e.g. `https://frontend-xyz.vercel.app`). Project Settings → Domains lets you pick a nicer
+   `*.vercel.app` name, e.g. `ine-price-tracker.vercel.app`.
+5. Back in **Render → Environment**, set `CORS_ORIGIN` to `https://<your-vercel-url>,http://localhost:5173` and save
+   (Render redeploys automatically). Without this, the browser blocks the dashboard's API calls.
+
+> `VITE_*` variables are baked in **at build time**. If the backend URL changes, redeploy the frontend.
+
+### 8e.4 cron-job.org (the schedule): one time
+Create a free account at https://cron-job.org, set your time zone to Asia/Kolkata, then create **two** jobs:
+
+| | Job 1: **INE price scrape** | Job 2: **INE keep warm** |
+|---|---|---|
+| URL | `https://<your-service>.onrender.com/api/cron/scrape` | `https://<your-service>.onrender.com/api/health` |
+| Schedule | **Every 2 hours** (at minute 0) | Every 10 minutes |
+| Advanced → Request method | **POST** | GET |
+| Advanced → Headers | `x-cron-secret` = the `CRON_SECRET` value | – |
+| Expected result | `202 {"started":true,"run_id":…}` (or `200 {"started":false}` if a run is still going) | `200 {"status":"ok"}` |
+
+Use **Test run** on Job 1 and check that the dashboard's "Recent runs" shows a **Scheduled** run.
+
+**Why the keep-warm job?** Render's free tier sleeps after 15 minutes without traffic, and waking takes up to a
+minute, longer than cron-job.org's 30s timeout. A cheap `/api/health` ping every 10 minutes keeps it awake. (One
+always-on free service uses about 730 of the 750 free hours a month.) Even without it, the scrape still
+happens: Render holds the request while waking and our endpoint answers straight away.
+
+### 8e.5 After deploying
+- Track **2–3 products** on the live site (the 3 from local testing are already in Supabase, so they appear
+  automatically, because local and live share the same database).
+- Leave it running: each scheduled run adds one row per product to the history and the log.
+- Troubleshooting: **Render → Logs** shows every run step by step (`[run 12] ▶ …`, `✓`/`✗`).
 
 ---
 
