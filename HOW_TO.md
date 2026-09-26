@@ -6,6 +6,12 @@
 
 **Deadline:** Sunday 27 September 2026, 11:59 PM IST. Submit at https://forms.gle/6LGyJV9yi6W1gna18
 
+| Live | URL |
+|---|---|
+| Dashboard (Vercel) | https://ine-tracker-price.vercel.app |
+| API (Render) | https://ine-price-tracker-api-iwhp.onrender.com (health: `/api/health`) |
+| Repos | https://github.com/Mitanshi2034/backend · https://github.com/Mitanshi2034/frontend |
+
 ---
 
 ## Contents
@@ -708,7 +714,19 @@ minute, longer than cron-job.org's 30s timeout. A cheap `/api/health` ping every
 always-on free service uses about 730 of the 750 free hours a month.) Even without it, the scrape still
 happens: Render holds the request while waking and our endpoint answers straight away.
 
-### 8e.5 After deploying
+### 8e.5 Deployment results (26 Sep 2026)
+| Check | Result |
+|---|---|
+| Render build (Docker, Playwright image) | ✅ live at https://ine-price-tracker-api-iwhp.onrender.com |
+| `/api/health`, catalog (960), search, tracked, runs on Render | ✅ all 200, ~0.2–0.8s |
+| **Playwright on Render**: manual check of Veloria E-Reader Go / 64 GB | ✅ success in 15.5s. A dropped click was handled. Price ₹27,705 → **₹26,494**, stock Sold out → **46** (back in stock) |
+| Vercel build uses the Render URL; CORS allows only `https://ine-tracker-price.vercel.app` (+ localhost) | ✅ |
+| Cron endpoint with wrong/missing secret | ✅ 401 |
+| cron-job.org **Test run** | First try `401`: the header **key** had been entered as `CRON_SECRET`. Fixed to `x-cron-secret` → ✅ `202 Accepted` in 373ms |
+| First scheduled run (run 8) | ✅ 2/2 succeeded. Veloria correctly **skipped** (checked 37 min earlier, not due). Tamarack ₹23,582 → **₹15,837** (MRP also changed 38,035 → 22,306); Violin ₹1,02,578 → **₹1,52,231**, sold out. Raw texts confirm both (`₹1,52,231` with zero-width spaces) |
+| CSV from the live API | ✅ attachment, 7 required columns, ISO UTC timestamps |
+
+### 8e.6 After deploying
 - Track **2–3 products** on the live site (the 3 from local testing are already in Supabase, so they appear
   automatically, because local and live share the same database).
 - Leave it running: each scheduled run adds one row per product to the history and the log.
@@ -806,8 +824,9 @@ The page should show **API: ok · Database: ok**.
   - [x] 3 products tracked on Supabase with their first real data points (Tamarack Film Scanner Nano / Standard kit,
         Veloria E-Reader Go / 64 GB, Saffrix Violin Nano / Studio bundle). You can change these from the dashboard later
 - [x] **Step 4:** Dashboard UI: search and pick → tracked products → price/stock charts → scrape log → runs → Export CSV → [section 8d](#8d-step-4-the-dashboard)
-- [ ] **Step 5:** Deploy: Supabase → Render (Docker with Playwright) → Vercel → cron-job.org every 2 h;
-      track 2–3 products **immediately** so real history builds up
+- [x] **Step 5:** Deploy: Supabase → Render (Docker with Playwright) → Vercel → cron-job.org every 2 h → [section 8e](#8e-step-5-deployment)
+  - [x] Scrape job live (every 2 h, POST + `x-cron-secret`), first scheduled run succeeded
+  - [ ] Keep-warm job (GET `/api/health` every 10 min)
 - [ ] **Step 6:** README, DESIGN_NOTE, headed-run screen recording (you), submit the form
 
 ---
