@@ -1,4 +1,4 @@
-# INE Price Tracker: Backend
+# CIPHER: INE Price Tracker (Backend)
 
 Tracks the price and stock of products in INE's mock store
 (https://demo.inelabteamdev.com) on a fixed schedule, and keeps an honest log of every scrape attempt.

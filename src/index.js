@@ -22,7 +22,7 @@ app.use(
 )
 app.use(express.json())
 
-app.get('/', (_req, res) => res.json({ name: 'INE Price Tracker API', health: '/api/health' }))
+app.get('/', (_req, res) => res.json({ name: 'CIPHER · INE Price Tracker API', health: '/api/health' }))
 app.use('/api/health', healthRouter)
 app.use('/api/catalog', catalogRouter)
 app.use('/api/tracked', trackedRouter)
