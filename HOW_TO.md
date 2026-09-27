@@ -727,7 +727,16 @@ happens: Render holds the request while waking and our endpoint answers straight
 | First scheduled run (run 8) | ✅ 2/2 succeeded. Veloria correctly **skipped** (checked 37 min earlier, not due). Tamarack ₹23,582 → **₹15,837** (MRP also changed 38,035 → 22,306); Violin ₹1,02,578 → **₹1,52,231**, sold out. Raw texts confirm both (`₹1,52,231` with zero-width spaces) |
 | CSV from the live API | ✅ attachment, 7 required columns, ISO UTC timestamps |
 
-### 8e.6 After deploying
+### 8e.6 Production incident: rate limiting (27 Sep, 08:00 IST)
+- Runs 10–12 (02:00, 04:00, 06:00 IST): 3/3 each. **Run 13 (08:00): 0/3**. Every product got `product 429` /
+  `manifest HTTP 429` on all 3 attempts.
+- Cause: the store rate-limits by IP. Render's outgoing IPs are shared, and other scrapers of this store fire at minute 0.
+  Our 3s/6s backoff retried inside the same limit window.
+- Fix: rate-limit-aware backoff (20s/45s/90s), 60s pause before the next product, a **second pass** after a 2-minute
+  cool-down, and the cron minute moved from `0` to **`13`** (still every 2 hours).
+- The failures stay in the history as they happened. Nothing was edited.
+
+### 8e.7 After deploying
 - Track **2–3 products** on the live site (the 3 from local testing are already in Supabase, so they appear
   automatically, because local and live share the same database).
 - Leave it running: each scheduled run adds one row per product to the history and the log.
@@ -904,6 +913,7 @@ the project, design the schema and write code. Every piece is reviewed and expla
 | 17 | 4 | Let the chart pick its axis range from padded min/max | Uneven ticks like ₹23.3k / ₹23.7k / ₹24.1k and 0 / 35 / 70 / 132 | A "nice ticks" function (1, 2, 2.5, 5 × 10ⁿ steps) |
 | 18 | 4 | Showed the price range as "min – max" | With one data point it read "₹23,582 – ₹23,582" | Show a single value and "no change yet" |
 | 19 | 4 | Remove cleared the selection after the request, whether or not it succeeded | A failed delete would still have deselected the product | Clear the selection only after the delete succeeds |
+| 20 | prod | Retried failed products after 3s / 6s | The 08:00 IST scheduled run (run 13) got **HTTP 429** from the store on every request (shared Render IP, other scrapers at the top of the hour). All 3 attempts fell inside the limit window, so 0/3, logged honestly as failed | Detect 429 → back off 20/45/90s; pause 60s before the next product; second pass after a 2-min cool-down (one row, attempts from both passes); move cron off minute 0. Tested with simulated 429s |
 
 ---
 

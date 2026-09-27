@@ -63,6 +63,18 @@ successful one, or a `success` label that involved retries. If the database ever
 why is written instead, so no attempt disappears. Price history and the scrape log are the same table, so they cannot
 disagree. The dashboard shows failed checks as gaps in the chart.
 
+**Rate limiting in production (a real incident).** After three clean scheduled runs overnight (3/3 each), the 08:00
+run failed for all products: the store answered **HTTP 429** to every request. Render's outgoing IP is shared, and other
+scrapers hit this store at the top of the hour. The first version retried after 3s and 6s, far too short for a rate
+limit, so all three attempts landed inside the same limit window. The failures were logged honestly (`failed`, with
+"product 429" for each attempt). The fix:
+- 429s are recognised and backed off for **20s → 45s → 90s**.
+- The run **pauses 60s** before the next product.
+- Temporarily failed products get a **second pass after a 2-minute cool-down**, still recorded as one row, with every attempt listed.
+- The schedule was moved off the top of the hour.
+
+Tested with simulated 429s: recover-on-3rd-attempt is recorded as `retried`, and always-429 is recorded as `failed` after 5 attempts.
+
 **Unattended operation:**
 - Render's free tier sleeps, so cron-job.org triggers `POST /api/cron/scrape` every 2 hours (secret header), and pings
   `/api/health` every 10 minutes to keep it warm.
@@ -105,6 +117,7 @@ Mistakes in its first attempts, and how they were fixed:
 | Outcome label counted only the scraper's own retries | A price the store loaded on its 3rd internal try would have been called `success` | Track in-page retries too, and enforce the rule with a DB constraint |
 | HTTP client reported the maximum attempt count on every failure | A 404 tried once would be logged as "4 attempts" | Record the real number of tries |
 | Catalog sync had no stop condition for a dead store | It could retry for hours | Stop after 5 consecutive failures and keep the existing catalog |
+| Retried a failed product after 3s and 6s | Fine for flaky responses, useless against **rate limiting**: the 08:00 scheduled run failed on 429s for every product | Detect 429 → back off 20/45/90s, pause between products, second pass after 2 min, schedule off the top of the hour |
 | Read product data as soon as the heading appeared | A race: the heading can render before the product JSON is read | Wait explicitly for the data |
 
 Where the AI's output was right but incomplete, the fix came from testing against the real site. Stale "Refreshing"

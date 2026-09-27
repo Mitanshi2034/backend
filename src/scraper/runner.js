@@ -1,5 +1,6 @@
 import { pool, query } from '../db/pool.js'
 import { launchBrowser } from './browser.js'
+import { sleep } from './http.js'
 import { scrapeWithRetries } from './price.js'
 
 // A "run" = one trigger (cron / manual button / CLI) that scrapes one or more tracked products.
@@ -13,6 +14,8 @@ import { scrapeWithRetries } from './price.js'
 
 const ABANDON_AFTER_MINUTES = 30 // a 'running' row older than this belongs to a process that died
 const DUE_TOLERANCE_MINUTES = 15 // cron fires every 120 min; a scrape at 10:00:30 is still due at 12:00:00
+const RATE_LIMIT_PAUSE_MS = 60_000 // after a product failed on 429s, let the store's limit reset before the next one
+const SECOND_PASS_DELAY_MS = 120_000 // products that failed for temporary reasons get one more try after this
 
 export class RunInProgressError extends Error {}
 
@@ -81,37 +84,62 @@ export async function executeRun(run, options = {}) {
     await query('UPDATE scrape_runs SET products_total = $2 WHERE id = $1', [run.id, queue.length])
     log(`${run.trigger} run: ${queue.length} product(s) to scrape`)
 
+    const scrape = async (product, maxAttempts) => {
+      try {
+        if (!browser?.isConnected()) {
+          if (browser) log('browser crashed; launching a new one')
+          browser = await launchBrowser({ headless: options.headless, slowMo: options.slowMo })
+        }
+        return await scrapeWithRetries(
+          browser,
+          { storeProductId: product.store_product_id, optionId: product.option_id, name: product.name },
+          {
+            log,
+            faults: options.faults,
+            overlay: options.overlay,
+            maxAttempts,
+            rateLimitWaitsMs: options.rateLimitWaitsMs,
+          },
+        )
+      } catch (err) {
+        // Anything unexpected (e.g. the browser failed to launch) is still recorded as a failed attempt.
+        return {
+          ok: false,
+          attempts: 1,
+          errors: [`internal error: ${err.message}`],
+          error: `internal error: ${err.message}`,
+          notes: [],
+          retryable: true,
+        }
+      }
+    }
+    const finish = async (product, label, result) => {
+      await recordAttempt(product, run, result)
+      if (result.ok) succeeded++
+      else failed++
+      log(result.ok ? `✓ ${label}: ₹${result.price} · stock ${result.stock}` : `✗ ${label}: ${result.error}`)
+    }
+    const labelOf = (p) => `${p.name} [${p.option_label}] (#${p.store_product_id}/${p.option_id})`
+
+    // Pass 1. Failures that might be temporary (rate limit, timeout, store error) are held back for pass 2
+    // instead of being recorded straight away; permanent ones (option removed) are recorded now.
+    const deferred = []
     while (queue.length) {
       for (const product of queue) {
         done.add(product.id)
-        const label = `${product.name} [${product.option_label}] (#${product.store_product_id}/${product.option_id})`
-        log(`▶ ${label}`)
-        let result
-        try {
-          if (!browser?.isConnected()) {
-            if (browser) log('browser crashed; launching a new one')
-            browser = await launchBrowser({ headless: options.headless, slowMo: options.slowMo })
-          }
-          result = await scrapeWithRetries(
-            browser,
-            { storeProductId: product.store_product_id, optionId: product.option_id, name: product.name },
-            { log, faults: options.faults, overlay: options.overlay },
-          )
-        } catch (err) {
-          // Anything unexpected (e.g. the browser failed to launch) is still recorded as a failed attempt.
-          result = {
-            ok: false,
-            attempts: 1,
-            errors: [`internal error: ${err.message}`],
-            error: `internal error: ${err.message}`,
-            notes: [],
+        log(`▶ ${labelOf(product)}`)
+        const result = await scrape(product)
+        if (result.ok || result.retryable === false) {
+          await finish(product, labelOf(product), result)
+        } else {
+          deferred.push({ product, first: result })
+          log(`… ${labelOf(product)} failed for now; will try again after a cool-down`)
+          if (result.rateLimited) {
+            const pause = options.rateLimitPauseMs ?? RATE_LIMIT_PAUSE_MS
+            log(`store is rate-limiting; pausing ${pause / 1000}s before the next product`)
+            await sleep(pause)
           }
         }
-
-        await recordAttempt(product, run, result)
-        if (result.ok) succeeded++
-        else failed++
-        log(result.ok ? `✓ ${label}: ₹${result.price} · stock ${result.stock}` : `✗ ${label}: ${result.error}`)
       }
       // Products added while this run was busy (never scraped yet) are picked up now,
       // instead of waiting up to 2 hours for the next scheduled run.
@@ -120,6 +148,27 @@ export async function executeRun(run, options = {}) {
       )
       queue = added.filter((p) => !done.has(p.id))
       if (queue.length) log(`picking up ${queue.length} product(s) added during this run`)
+    }
+
+    // Pass 2: one more try for the held-back products after a cool-down. Still ONE row per product,
+    // whose attempts/errors include both passes (so a pass-2 success is honestly labelled "retried").
+    if (deferred.length) {
+      const delay = options.secondPassDelayMs ?? SECOND_PASS_DELAY_MS
+      log(`second pass: ${deferred.length} product(s) in ${delay / 1000}s`)
+      await sleep(delay)
+      for (const { product, first } of deferred) {
+        log(`▶ (second pass) ${labelOf(product)}`)
+        const second = await scrape(product, 2)
+        const errors = [...first.errors, `second pass after ${delay / 1000}s cool-down`, ...second.errors]
+        const merged = {
+          ...second,
+          attempts: first.attempts + second.attempts,
+          errors,
+          notes: [...(first.notes ?? []), ...(second.notes ?? [])],
+          error: second.ok ? undefined : errors.join(' | '),
+        }
+        await finish(product, labelOf(product), merged)
+      }
     }
 
     await query(

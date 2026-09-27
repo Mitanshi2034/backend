@@ -31,6 +31,9 @@ const CONSENT_WINDOW_MS = 5500 // the popup appears 1.5-5s after the app mounts
 const PRICE_LOAD_TIMEOUT_MS = 60_000 // covers the store's own 6 retries + slow responses
 const ATTEMPT_TIMEOUT_MS = 120_000 // hard ceiling for one attempt, whatever happens
 const MAX_CHECK_AGAIN = 3 // re-requests while the quote is still "Refreshing prices"
+// A 429 means the store is rate-limiting us (Render's outgoing IP is shared, and other scrapers hit the
+// store at the top of the hour). Seconds of backoff are useless against that; wait minutes.
+const RATE_LIMIT_WAITS_MS = [20_000, 45_000, 90_000]
 
 /**
  * Scrape one product option, retrying with a fresh browser context on failure.
@@ -40,7 +43,11 @@ const MAX_CHECK_AGAIN = 3 // re-requests while the quote is still "Refreshing pr
  * @param {{ storeProductId:number, optionId:string, name?:string }} target
  * @param {{ maxAttempts?:number, log?:(msg:string)=>void, faults?:object, overlay?:boolean }} options
  */
-export async function scrapeWithRetries(browser, target, { maxAttempts = 3, log = console.log, faults = null, overlay = false } = {}) {
+export async function scrapeWithRetries(
+  browser,
+  target,
+  { maxAttempts = 3, log = console.log, faults = null, overlay = false, rateLimitWaitsMs = RATE_LIMIT_WAITS_MS } = {},
+) {
   const errors = []
   const notes = []
   const startedAt = Date.now()
@@ -66,15 +73,28 @@ export async function scrapeWithRetries(browser, target, { maxAttempts = 3, log 
       ])
       return { ok: true, ...result, attempts: attempt, errors, notes, durationMs: Date.now() - startedAt }
     } catch (err) {
-      const message = err instanceof ScrapeError || err instanceof ParseError ? err.message : `unexpected: ${err.message}`
+      const message =
+        err instanceof ScrapeError || err instanceof ParseError ? err.message : `unexpected: ${err.message}`
+      const rateLimited = /\b429\b/.test(message)
       errors.push(`attempt ${attempt}: ${message}`)
       log(`  ✗ attempt ${attempt}/${maxAttempts} failed: ${message}`)
       const retryable = err.retryable !== false
       if (!retryable || attempt === maxAttempts) {
-        return { ok: false, attempts: attempt, errors, notes, error: errors.join(' | '), durationMs: Date.now() - startedAt }
+        return {
+          ok: false,
+          attempts: attempt,
+          errors,
+          notes,
+          error: errors.join(' | '),
+          retryable,
+          rateLimited,
+          durationMs: Date.now() - startedAt,
+        }
       }
-      const wait = 3000 * attempt
-      log(`  ↻ retrying with a fresh browser page in ${wait / 1000}s`)
+      const wait = rateLimited ? rateLimitWaitsMs[Math.min(attempt, rateLimitWaitsMs.length) - 1] : 3000 * attempt
+      log(
+        `  ↻ ${rateLimited ? 'store is rate-limiting (429); backing off' : 'retrying with a fresh browser page'} in ${wait / 1000}s`,
+      )
       await sleep(wait)
     } finally {
       clearTimeout(timer)
@@ -125,7 +145,10 @@ async function scrapeOnce(context, target, { attempt, maxAttempts, log, faultSta
   const scrim = page.locator('.consent-scrim')
   const dismissConsent = async () => {
     for (let i = 0; i < 5 && (await scrim.isVisible()); i++) {
-      await scrim.getByRole('button', { name: /reject/i }).click({ timeout: 3000 }).catch(() => {})
+      await scrim
+        .getByRole('button', { name: /reject/i })
+        .click({ timeout: 3000 })
+        .catch(() => {})
       await page.waitForTimeout(200)
     }
     if (await scrim.isVisible()) throw new ScrapeError('cookie popup would not close', { kind: 'structure' })
@@ -159,7 +182,9 @@ async function scrapeOnce(context, target, { attempt, maxAttempts, log, faultSta
   // ---- trap 7: layout manifest. Use the exact one the page loaded. ----
   await waitUntil(() => net.manifest || (net.manifestStatus && net.manifestStatus >= 400), 10_000)
   if (!net.manifest?.classes?.priceValue) {
-    throw new ScrapeError(`layout manifest did not load (HTTP ${net.manifestStatus ?? 'no response'})`, { kind: 'load' })
+    throw new ScrapeError(`layout manifest did not load (HTTP ${net.manifestStatus ?? 'no response'})`, {
+      kind: 'load',
+    })
   }
   const cls = net.manifest.classes
   await status(`layout variant ${net.manifest.variant} (price class .${cls.priceValue})`)
@@ -167,12 +192,17 @@ async function scrapeOnce(context, target, { attempt, maxAttempts, log, faultSta
   // ---- trap 1: random default option. Select ours by the store's own option id. ----
   const option = net.item.options?.find((o) => o.id === target.optionId)
   if (!option) {
-    throw new ScrapeError(`option ${target.optionId} is no longer offered for this product`, { kind: 'option', retryable: false })
+    throw new ScrapeError(`option ${target.optionId} is no longer offered for this product`, {
+      kind: 'option',
+      retryable: false,
+    })
   }
   const hasPicker = net.item.options.length > 1
   if (hasPicker) {
     await status(`selecting option "${option.label}"`)
-    const chip = page.locator('.opt-picker button.opt-chip').filter({ hasText: new RegExp(`^${escapeRegex(option.label)}$`) })
+    const chip = page
+      .locator('.opt-picker button.opt-chip')
+      .filter({ hasText: new RegExp(`^${escapeRegex(option.label)}$`) })
     for (let i = 0; i < 3 && (await chip.getAttribute('aria-pressed')) !== 'true'; i++) {
       await chip.click()
       await page.waitForTimeout(150)
@@ -225,7 +255,9 @@ async function scrapeOnce(context, target, { attempt, maxAttempts, log, faultSta
   pageRetries += snapshot.storeAttempts - 1
   for (let i = 0; snapshot.pending && i < MAX_CHECK_AGAIN; i++) {
     await status('price is still "Refreshing" (stale), requesting a fresh quote')
-    notes.push(`quote was marked "Refreshing prices" (stale value ${snapshot.priceText?.replace(/[​ ]/g, '')}); not stored, re-requested`)
+    notes.push(
+      `quote was marked "Refreshing prices" (stale value ${snapshot.priceText?.replace(/[​ ]/g, '')}); not stored, re-requested`,
+    )
     const again = panel.getByRole('button', { name: /check again/i })
     await page.waitForTimeout(1500)
     await clickUntilPageReacts(page, again, 'ready', notes, status)
@@ -238,7 +270,9 @@ async function scrapeOnce(context, target, { attempt, maxAttempts, log, faultSta
 
   // ---- traps 5/6: decoys and look-alikes. Exactly one real price element, confirmed twice. ----
   if (snapshot.priceCount !== 1) {
-    throw new ScrapeError(`expected exactly 1 price element (.${cls.priceValue}), found ${snapshot.priceCount}`, { kind: 'structure' })
+    throw new ScrapeError(`expected exactly 1 price element (.${cls.priceValue}), found ${snapshot.priceCount}`, {
+      kind: 'structure',
+    })
   }
   if (!snapshot.priceVisible) throw new ScrapeError('the price element is hidden (decoy?)', { kind: 'structure' })
   if (!snapshot.crossCheckAgrees) {
@@ -254,7 +288,10 @@ async function scrapeOnce(context, target, { attempt, maxAttempts, log, faultSta
   }
   const lastQuote = net.quotes.at(-1)
   if (!lastQuote || lastQuote.opt !== target.optionId || lastQuote.status !== 200) {
-    throw new ScrapeError(`last quote request was for ${lastQuote?.opt ?? 'nothing'} (HTTP ${lastQuote?.status}), expected ${target.optionId}`, { kind: 'validation' })
+    throw new ScrapeError(
+      `last quote request was for ${lastQuote?.opt ?? 'nothing'} (HTTP ${lastQuote?.status}), expected ${target.optionId}`,
+      { kind: 'validation' },
+    )
   }
 
   // ---- traps 8 & 10: parse strictly, then sanity-check ----
@@ -266,8 +303,10 @@ async function scrapeOnce(context, target, { attempt, maxAttempts, log, faultSta
   } catch {
     notes.push(`could not parse MRP "${snapshot.mrpText}" (not stored)`)
   }
-  if (!(price.value > 0 && price.value < 100_000_000)) throw new ScrapeError(`implausible price ${price.value}`, { kind: 'validation' })
-  if (mrp !== null && price.value > mrp) throw new ScrapeError(`price ${price.value} is above MRP ${mrp}`, { kind: 'validation' })
+  if (!(price.value > 0 && price.value < 100_000_000))
+    throw new ScrapeError(`implausible price ${price.value}`, { kind: 'validation' })
+  if (mrp !== null && price.value > mrp)
+    throw new ScrapeError(`price ${price.value} is above MRP ${mrp}`, { kind: 'validation' })
   if (snapshot.soldOutPill !== (stock.value === 0)) {
     throw new ScrapeError(`stock "${snapshot.stockText}" disagrees with the availability badge`, { kind: 'validation' })
   }
@@ -303,8 +342,13 @@ async function clickUntilPageReacts(page, button, fromState, notes, status) {
   for (let click = 1; click <= 4; click++) {
     await button.click()
     const reacted = await page
-      .waitForFunction((c) => !document.querySelector('.offer-panel')?.classList.contains(c), fromClass, { timeout: 2500 })
-      .then(() => true, () => false)
+      .waitForFunction((c) => !document.querySelector('.offer-panel')?.classList.contains(c), fromClass, {
+        timeout: 2500,
+      })
+      .then(
+        () => true,
+        () => false,
+      )
     if (reacted) return
     notes.push(`click ${click} was ignored by the page`)
     await status(`click ${click} was ignored by the page, clicking again`)
@@ -322,11 +366,18 @@ async function waitForQuote(page, net) {
       null,
       { timeout: PRICE_LOAD_TIMEOUT_MS },
     )
-    .then(() => true, () => false)
+    .then(
+      () => true,
+      () => false,
+    )
   const errors = net.errors.length ? ` (store errors: ${summarise(net.errors)})` : ''
-  if (!done) throw new ScrapeError(`price did not load within ${PRICE_LOAD_TIMEOUT_MS / 1000}s${errors}`, { kind: 'timeout' })
+  if (!done)
+    throw new ScrapeError(`price did not load within ${PRICE_LOAD_TIMEOUT_MS / 1000}s${errors}`, { kind: 'timeout' })
   if (await page.locator('.offer-panel.offer-failed').isVisible()) {
-    const text = (await page.locator('.offer-panel.offer-failed').innerText()).replace(/\s+/g, ' ').replace(/retry$/i, '').trim()
+    const text = (await page.locator('.offer-panel.offer-failed').innerText())
+      .replace(/\s+/g, ' ')
+      .replace(/retry$/i, '')
+      .trim()
     throw new ScrapeError(`store gave up: ${text}${errors}`, { kind: 'store' })
   }
 }
@@ -339,7 +390,9 @@ function readQuote(page, cls) {
     const sel = (c) => (c ? `.${CSS.escape(c)}` : null)
     const visible = (el) => {
       const cs = getComputedStyle(el)
-      return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && el.getClientRects().length > 0
+      return (
+        cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && el.getClientRects().length > 0
+      )
     }
     const text = (root, c) => (c && root?.querySelector(sel(c))?.textContent) ?? null
 
@@ -367,7 +420,9 @@ function readQuote(page, cls) {
       priceText: priceEl?.textContent ?? null,
       crossCheckAgrees: candidates.length === 1 && candidates[0] === priceEl,
       candidateCount: candidates.length,
-      pending: !!row && (/refreshing prices/i.test(row.textContent) || (priceEl && Number(getComputedStyle(priceEl).opacity) < 0.9)),
+      pending:
+        !!row &&
+        (/refreshing prices/i.test(row.textContent) || (priceEl && Number(getComputedStyle(priceEl).opacity) < 0.9)),
       storeAttempts: attemptsMatch ? Number(attemptsMatch[1]) : 1,
       mrpText: text(row, cls.mrp),
       saleText: text(row, cls.sale),
@@ -412,6 +467,14 @@ async function installFaults(context, state, attempt, log) {
       route.fulfill({ status: 503, body: 'Service Unavailable' })
     })
   }
+  if (state.rateLimitAttempts && attempt <= state.rateLimitAttempts) {
+    const limited = (route) => {
+      log('  [simulated fault] store answered HTTP 429 (rate limited)')
+      route.fulfill({ status: 429, contentType: 'application/json', body: '{"error":"rate_limited"}' })
+    }
+    await context.route('**/api/v2/ui/manifest', limited)
+    await context.route('**/api/v2/items/*', limited) // product JSON only; "*" does not match the /quote sub-path
+  }
   if (state.slowHandshakeMs) {
     await context.route('**/api/v2/handshake', async (route) => {
       if (route.request().method() === 'GET' && once(`slow-${attempt}`)) {
@@ -454,7 +517,11 @@ function summarise(lines) {
 
 // Display text for the dashboard: drop the invisible characters the store hides inside words.
 function cleanText(text) {
-  const s = text?.normalize('NFKC').replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '').replace(/\s+/g, ' ').trim()
+  const s = text
+    ?.normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
   return s || null
 }
 
