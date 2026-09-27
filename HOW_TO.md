@@ -890,8 +890,10 @@ The page should show **API: ok · Database: ok**.
       synced into Supabase, `GET /api/catalog/search?q=`, product details and options → [section 8b](#8b-step-2-catalog-sync-and-search)
 - [x] **Step 3:** Price scraper (Playwright) with retries, validation and honest logging; tracked-product
       routes; history/log API; CSV export; protected cron endpoint; headed-mode script → [section 8c](#8c-step-3-the-price-scraper-runs-history-csv-cron)
-  - [x] 3 products tracked on Supabase with their first real data points (Tamarack Film Scanner Nano / Standard kit,
-        Veloria E-Reader Go / 64 GB, Saffrix Violin Nano / Studio bundle). You can change these from the dashboard later
+  - [x] **10 products tracked**, one per store category (27 Sep): Tamarack Film Scanner Nano, Veloria E-Reader Go,
+        Saffrix Violin Nano, Saffrix Desk Lamp Arc, Junova Spin Bike Edge, Tundrel Handheld Console Flex, Redwick Smart
+        Panel Nano, Brightwell Mesh System Nano, Quarrow Hammock Edge, Lumeno Hair Dryer Prime. The 6 added together
+        were scraped in one run (run 18: 6/6). Runs now pause 4s between products to stay polite at this size
 - [x] **Step 4:** Dashboard UI: search and pick → tracked products → price/stock charts → scrape log → runs → Export CSV → [section 8d](#8d-step-4-the-dashboard)
 - [x] **Step 5:** Deploy: Supabase → Render (Docker with Playwright) → Vercel → cron-job.org every 2 h → [section 8e](#8e-step-5-deployment)
   - [x] Scrape job live (every 2 h, POST + `x-cron-secret`), first scheduled run succeeded
