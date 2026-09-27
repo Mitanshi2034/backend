@@ -640,7 +640,7 @@ After comparing with PriceHistory.app, CamelCamelCamel and Keepa (product list +
 price, lowest/average/highest, the chart as the centrepiece, and highlights for drops and restocks), the single
 crowded screen was split into pages:
 - **Overview** `/`: summary row, product cards (price, change since last check, sparkline, stock), a "Track another
-  product" tile, and a **Recent changes** feed. This is the **alerts** bonus: price drop/rise, back in stock, sold out, and
+  product" tile, and an **Alerts** panel. This is the **alerts** bonus: price drop/rise, back in stock, sold out, and
   **store layout changed**, which covers the change-detection bonus since the store switched layout variant 5 → 2 overnight.
 - **Product** `/product/:id`: big price + change chip + MRP, facts, "Today's price is low / typical / high" bar
   (lowest–average–highest), charts with **24 h / 3 days / All** tabs, the product's changes, its scrape log.
