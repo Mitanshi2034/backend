@@ -14,7 +14,8 @@ const LIST_SQL = `
          last.attempted_at AS last_attempt_at, last.outcome AS last_outcome, last.error AS last_error,
          ok.price AS last_price, ok.stock AS last_stock, ok.mrp AS last_mrp, ok.attempted_at AS last_success_at,
          ok.extra AS last_extra,
-         stats.total_attempts, stats.failed_attempts, stats.retried_attempts, stats.min_price, stats.max_price
+         stats.total_attempts, stats.failed_attempts, stats.retried_attempts, stats.min_price, stats.max_price,
+         stats.avg_price, prev.price AS prev_price, prev.stock AS prev_stock, trend.points AS trend
     FROM tracked_products t
     LEFT JOIN LATERAL (
       SELECT attempted_at, outcome, error FROM scrape_attempts a
@@ -28,9 +29,20 @@ const LIST_SQL = `
       SELECT count(*)::int AS total_attempts,
              count(*) FILTER (WHERE outcome = 'failed')::int AS failed_attempts,
              count(*) FILTER (WHERE outcome = 'retried')::int AS retried_attempts,
-             min(price) AS min_price, max(price) AS max_price
+             min(price) AS min_price, max(price) AS max_price, round(avg(price), 2) AS avg_price
         FROM scrape_attempts a WHERE a.tracked_product_id = t.id
-    ) stats ON TRUE`
+    ) stats ON TRUE
+    -- the successful check before the latest one (for "change since last check")
+    LEFT JOIN LATERAL (
+      SELECT price, stock FROM scrape_attempts a
+       WHERE a.tracked_product_id = t.id AND outcome <> 'failed' ORDER BY attempted_at DESC OFFSET 1 LIMIT 1
+    ) prev ON TRUE
+    -- the last 24 checks, oldest first, for the card sparkline (failed checks included as gaps)
+    LEFT JOIN LATERAL (
+      SELECT json_agg(json_build_object('t', attempted_at, 'price', price, 'outcome', outcome) ORDER BY attempted_at) AS points
+        FROM (SELECT attempted_at, price, outcome FROM scrape_attempts a
+               WHERE a.tracked_product_id = t.id ORDER BY attempted_at DESC LIMIT 24) recent
+    ) trend ON TRUE`
 
 // GET /api/tracked
 router.get('/', async (_req, res) => {

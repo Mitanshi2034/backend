@@ -7,6 +7,7 @@ import trackedRouter from './routes/tracked.js'
 import runsRouter from './routes/runs.js'
 import exportRouter from './routes/export.js'
 import cronRouter from './routes/cron.js'
+import insightsRouter from './routes/insights.js'
 import { ensureCatalogFresh } from './scraper/catalog.js'
 import { pool } from './db/pool.js'
 
@@ -28,6 +29,7 @@ app.use('/api/tracked', trackedRouter)
 app.use('/api/runs', runsRouter)
 app.use('/api/export', exportRouter)
 app.use('/api/cron', cronRouter)
+app.use('/api', insightsRouter) // /api/attempts, /api/changes, /api/stats
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
 
