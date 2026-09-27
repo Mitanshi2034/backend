@@ -14,6 +14,7 @@ import { scrapeWithRetries } from './price.js'
 
 const ABANDON_AFTER_MINUTES = 30 // a 'running' row older than this belongs to a process that died
 const DUE_TOLERANCE_MINUTES = 15 // cron fires every 120 min; a scrape at 10:00:30 is still due at 12:00:00
+const PRODUCT_GAP_MS = 4_000 // polite pause between products, so a 10-product run doesn't hit the store back-to-back
 const RATE_LIMIT_PAUSE_MS = 60_000 // after a product failed on 429s, let the store's limit reset before the next one
 const SECOND_PASS_DELAY_MS = 120_000 // products that failed for temporary reasons get one more try after this
 
@@ -126,6 +127,7 @@ export async function executeRun(run, options = {}) {
     const deferred = []
     while (queue.length) {
       for (const product of queue) {
+        if (done.size > 0) await sleep(options.productGapMs ?? PRODUCT_GAP_MS)
         done.add(product.id)
         log(`▶ ${labelOf(product)}`)
         const result = await scrape(product)
