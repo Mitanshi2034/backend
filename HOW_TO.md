@@ -635,7 +635,24 @@ The page refreshes itself every 20 seconds, and every 4 seconds while a run is i
   (the log table scrolls inside its own box).
 - **Accessible:** keyboard focus rings, labelled controls, row buttons with full spoken labels, reduced-motion support.
 
-### 8d.4 Verified in the browser (against the real Supabase data)
+### 8d.4 Redesign (27 Sep): separate pages, like real price trackers
+After comparing with PriceHistory.app, CamelCamelCamel and Keepa (product list + a dedicated page per product, a big
+price, lowest/average/highest, the chart as the centrepiece, and highlights for drops and restocks), the single
+crowded screen was split into pages:
+- **Overview** `/`: summary row, product cards (price, change since last check, sparkline, stock), a "Track another
+  product" tile, and a **Recent changes** feed. This is the **alerts** bonus: price drop/rise, back in stock, sold out, and
+  **store layout changed**, which covers the change-detection bonus since the store switched layout variant 5 → 2 overnight.
+- **Product** `/product/:id`: big price + change chip + MRP, facts, "Today's price is low / typical / high" bar
+  (lowest–average–highest), charts with **24 h / 3 days / All** tabs, the product's changes, its scrape log.
+  Secondary actions moved into a **⋯ menu** (frequency, stop tracking). **Pause was removed** (not in the brief).
+- **Activity** `/activity`: all attempts across products + Export CSV. **Status** `/status`: scheduler health + run history.
+- **Track a product** is a pop-up search available on every page.
+- **New logo:** a hand-drawn SVG price tag whose hole runs out into a falling price line, with the wordmark **pricetrail**.
+- Backend support: `GET /api/attempts`, `GET /api/changes` (SQL window function `lag()` over successful checks),
+  `GET /api/stats`, and `/api/tracked` now includes previous price, average and a 24-check trend.
+- `vercel.json` rewrites all paths to `index.html` so deep links survive a refresh.
+
+### 8d.5 Verified in the browser (against the real Supabase data)
 - Desktop 1440×1000: the layout, glass panels, backdrop glows, stats and charts all render
 - **Check now** → the button changes to "Checking…" and the run shows "running…". After about 18s, **without a reload**, the new row
   appeared: it was `Retried` with "store needed 3 tries to load the price" (a real store failure, honestly logged), the chart
