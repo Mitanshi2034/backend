@@ -648,7 +648,8 @@ crowded screen was split into pages:
 - **Activity** `/activity`: all attempts across products + Export CSV. **Status** `/status`: scheduler health + run history.
 - **Track a product** is a pop-up search available on every page.
 - **Brand: CIPHER.** The store encrypts its prices and this app decodes them, hence the name. The mark is a hand-drawn SVG
-  keyhole inside an open dial ring on an amber tile. The wordmark is set in **Michroma**, all caps, with wide letter-spacing.
+  amber tile with a falling price line ending in a dot. The wordmark is set in **Michroma**, all caps, with wide letter-spacing.
+  Michroma has a single weight, so a thin same-colour text stroke gives it a bolder look.
 - Backend support: `GET /api/attempts`, `GET /api/changes` (SQL window function `lag()` over successful checks),
   `GET /api/stats`, and `/api/tracked` now includes previous price, average and a 24-check trend.
 - `vercel.json` rewrites all paths to `index.html` so deep links survive a refresh.
