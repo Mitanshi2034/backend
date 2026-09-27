@@ -35,6 +35,9 @@ React dashboard (Vercel) ◀──── REST: search, track, history, CSV ─�
   - seven price formats
   - stale "Refreshing prices" quotes
   - slow or failing responses
+- **Retries at four levels:** the store's own in-page retries, re-requesting stale quotes, up to 3 attempts per product
+  in a fresh browser context, and a second pass after a 2-minute cool-down. When the store **rate-limits (HTTP 429)**, the
+  scraper backs off 20s → 45s → 90s and pauses before the next product. Products are spaced 4s apart in every run.
 - **Every scrape attempt is stored** as `success`, `retried` or `failed`. A failed attempt stores no price or stock.
   The database enforces this with CHECK constraints, so wrong or empty data cannot be saved.
 
@@ -42,7 +45,7 @@ React dashboard (Vercel) ◀──── REST: search, track, history, CSV ─�
 
 | What | When |
 |---|---|
-| Scheduled scrape | **Every 2 hours** (minute 0, Asia/Kolkata), triggered by **cron-job.org** calling `POST /api/cron/scrape` with the `x-cron-secret` header |
+| Scheduled scrape | **Every 2 hours at minute 13** (crontab `13 */2 * * *`, Asia/Kolkata: 00:13, 02:13, … 22:13), triggered by **cron-job.org** calling `POST /api/cron/scrape` with the `x-cron-secret` header. Minute 13 rather than 0 avoids the top-of-the-hour burst of other scrapers that got us rate-limited |
 | Which products | Every active tracked product whose interval (default 120 min, configurable per product: 2 h … daily) has passed, with a 15-minute tolerance |
 | Keep-warm | cron-job.org calls `GET /api/health` every 10 minutes, so Render's free instance doesn't sleep |
 | First scrape | Starts immediately when a product is tracked, and on demand with "Check now" |
@@ -51,6 +54,15 @@ React dashboard (Vercel) ◀──── REST: search, track, history, CSV ─�
 Why an external scheduler: Render's free tier sleeps when idle, so an in-process timer would stop. The cron
 endpoint replies `202` immediately and scrapes in the background (one browser, one product at a time).
 Only one run can be active at a time, because a unique index enforces it.
+
+## Bonus features
+
+| Bonus from the brief | Where |
+|---|---|
+| Price-drop / back-in-stock alerts (in-app) | **Alerts** panel on the dashboard and on each product page: price drop, price up, back in stock, sold out (`GET /api/changes`) |
+| Change detection for the store's page structure | The layout variant is recorded on every check, and **"Store layout changed"** alerts fire when it switches. Checks that fail because the page no longer looks as expected are flagged as **"Page structure changed"** |
+| Configurable scrape frequency per product | Product page ⋯ menu: every 2 / 4 / 6 / 12 hours or daily (`PATCH /api/tracked/:id`) |
+| Dashboard across multiple products + extra info | Overview cards (change since last check, trend line, stock), and per product: MRP, lowest/average/highest, seller, rating, delivery |
 
 ## Setup (local)
 
@@ -117,6 +129,9 @@ the retry logic can be seen. Chaos results are never saved.
 | GET | `/api/tracked/:id/history` | – | Every scrape attempt (log + chart data) |
 | POST | `/api/tracked/:id/scrape` | – | Check now |
 | GET | `/api/runs` | – | Recent runs (scheduled / manual / CLI) |
+| GET | `/api/attempts` | – | Every scrape attempt across products (`?outcome=`, `?tracked_id=`) |
+| GET | `/api/changes` | – | Alerts: price drop/up, back in stock, sold out, layout/structure changes |
+| GET | `/api/stats` | – | Totals for the dashboard (checks in the last 24 h, success rate, scheduled runs) |
 | GET | `/api/export/scrapes.csv` | – | CSV of every attempt (see below) |
 | POST | `/api/cron/scrape` | secret | Scheduled run (cron-job.org) |
 
@@ -130,8 +145,8 @@ Failed attempts are included with empty price and stock.
 - **Backend:** Render Web Service (free), **Docker** runtime using the included `Dockerfile` (official Playwright image,
   so Chromium and its libraries are present). `render.yaml` describes the service. Health check: `/api/health`.
 - **Frontend:** Vercel (see the frontend repo). Set `CORS_ORIGIN` here to its URL.
-- **Scheduler:** cron-job.org: `POST /api/cron/scrape` every 2 hours with header `x-cron-secret`, plus
-  `GET /api/health` every 10 minutes.
+- **Scheduler:** cron-job.org: `POST /api/cron/scrape` on `13 */2 * * *` with header `x-cron-secret`, plus
+  `GET /api/health` every 10 minutes (keep-warm).
 
 ## Project layout
 
@@ -145,7 +160,7 @@ src/
   scraper/price.js    Playwright price/stock scraper
   scraper/parse.js    strict price/stock parsing
   scraper/runner.js   scrape runs: selection, one row per product, crash recovery
-  routes/             health, catalog, tracked, runs, export, cron
+  routes/             health, catalog, tracked, runs, export, cron, insights (attempts, changes, stats)
 scripts/              migrate, sync-catalog, scrape-headed
 test/                 parser tests
 ```

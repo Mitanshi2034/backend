@@ -71,7 +71,7 @@ limit, so all three attempts landed inside the same limit window. The failures w
 - 429s are recognised and backed off for **20s → 45s → 90s**.
 - The run **pauses 60s** before the next product.
 - Temporarily failed products get a **second pass after a 2-minute cool-down**, still recorded as one row, with every attempt listed.
-- The schedule was moved off the top of the hour.
+- The schedule was moved off the top of the hour (`13 */2 * * *`), and runs space products 4s apart.
 
 Tested with simulated 429s: recover-on-3rd-attempt is recorded as `retried`, and always-429 is recorded as `failed` after 5 attempts.
 

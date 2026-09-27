@@ -720,7 +720,7 @@ Create a free account at https://cron-job.org, set your time zone to Asia/Kolkat
 | | Job 1: **INE price scrape** | Job 2: **INE keep warm** |
 |---|---|---|
 | URL | `https://<your-service>.onrender.com/api/cron/scrape` | `https://<your-service>.onrender.com/api/health` |
-| Schedule | **Every 2 hours** (at minute 0) | Every 10 minutes |
+| Schedule | **Every 2 hours at minute 13**: Custom → crontab `13 */2 * * *` | Every 10 minutes |
 | Advanced → Request method | **POST** | GET |
 | Advanced → Headers | `x-cron-secret` = the `CRON_SECRET` value | – |
 | Expected result | `202 {"started":true,"run_id":…}` (or `200 {"started":false}` if a run is still going) | `200 {"status":"ok"}` |
