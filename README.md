@@ -64,22 +64,84 @@ Only one run can be active at a time, because a unique index enforces it.
 | Configurable scrape frequency per product | Product page ⋯ menu: every 2 / 4 / 6 / 12 hours or daily (`PATCH /api/tracked/:id`) |
 | Dashboard across multiple products + extra info | Overview cards (change since last check, trend line, stock), and per product: MRP, lowest/average/highest, seller, rating, delivery |
 
-## Setup (local)
+## Run the whole project locally
 
-**Requirements:** Node.js 20+, a Supabase project (free), Playwright's Chromium.
+The project is two repositories: **backend** (this one: API + scraper) and
+**[frontend](https://github.com/Mitanshi2034/frontend)** (the dashboard). Clone them side by side.
 
+**Requirements**
+- Node.js **20+** and npm (`node -v`)
+- Git
+- A free **Supabase** project (the database)
+- About 150 MB of disk for Playwright's Chromium
+
+### 1. Clone both repositories
 ```bash
+mkdir cipher && cd cipher
 git clone https://github.com/Mitanshi2034/backend.git
-cd backend
-npm install
-npx playwright install chromium
-cp .env.example .env          # fill in DATABASE_URL and CRON_SECRET (see below)
-npm run db:migrate            # creates the tables (or paste src/db/schema.sql into Supabase > SQL Editor)
-npm run catalog:sync          # optional: collect the store catalog now (~1 min); otherwise it runs on start
-npm run dev                   # http://localhost:4000
+git clone https://github.com/Mitanshi2034/frontend.git
+```
+```
+cipher/
+├── backend/    API + scraper      → http://localhost:4000
+└── frontend/   React dashboard    → http://localhost:5173
 ```
 
-Then run the [frontend](https://github.com/Mitanshi2034/frontend) with `VITE_API_URL=http://localhost:4000`.
+### 2. Create the database (Supabase, one time)
+1. https://supabase.com → **New project** (any region, e.g. Mumbai). Save the database password.
+2. **Connect** → **Session pooler** → copy the URI. It looks like
+   `postgresql://postgres.<ref>:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres`.
+   Use the Session pooler: the direct connection is IPv6-only, and hosts like Render are IPv4.
+
+### 3. Backend
+```bash
+cd backend
+npm install
+npx playwright install chromium   # the browser the price scraper drives
+cp .env.example .env
+```
+Edit `backend/.env`:
+- `DATABASE_URL` = the Session pooler URI from step 2, with your password in place of `[YOUR-PASSWORD]`
+- `CRON_SECRET` = any long random string, e.g. the output of `openssl rand -hex 32`
+- `CORS_ORIGIN` = `http://localhost:5173` (already the default)
+
+```bash
+npm run db:migrate      # creates the tables (safe to re-run)
+npm run catalog:sync    # optional: collect all 960 store products now (~1 min); otherwise it runs on first start
+npm run dev             # API on http://localhost:4000
+```
+Check it: http://localhost:4000/api/health should return `{"status":"ok","database":"ok",...}`.
+
+### 4. Frontend (in a second terminal)
+```bash
+cd frontend
+npm install
+cp .env.example .env    # VITE_API_URL=http://localhost:4000
+npm run dev             # dashboard on http://localhost:5173
+```
+
+### 5. Use it
+1. Open http://localhost:5173.
+2. In the search box, type part of a product name (e.g. `scanner`), pick a product, choose an option, and press
+   **Start tracking**. The first price check starts immediately and takes about 15 seconds.
+3. Watch the result appear on the card. Open the product for its charts, alerts and scrape log, and use **Export CSV** in the navbar.
+
+### 6. Trigger a scheduled-style run (optional)
+Locally there is no cron-job.org, so trigger the same endpoint it calls:
+```bash
+curl -X POST -H "x-cron-secret: <your CRON_SECRET>" http://localhost:4000/api/cron/scrape
+```
+It scrapes every tracked product whose interval has passed. You can also watch it in a visible browser with
+`npm run scrape:headed` (see below).
+
+### Troubleshooting
+| Symptom | Fix |
+|---|---|
+| `/api/health` shows `database: error…` | Check `DATABASE_URL` (Session pooler URI, correct password; special characters in the password must be URL-encoded) |
+| The dashboard says "Can't reach the server" | Is the backend running on port 4000? Does `frontend/.env` have `VITE_API_URL=http://localhost:4000`? Restart `npm run dev` after editing `.env` |
+| Search finds nothing | The catalog is still syncing on first start. Wait about a minute, or run `npm run catalog:sync` |
+| `Executable doesn't exist` from Playwright | Run `npx playwright install chromium` in `backend/` |
+| Cron call returns 401 | The `x-cron-secret` header must equal `CRON_SECRET` in `backend/.env` exactly |
 
 ### Commands
 | Command | What it does |
